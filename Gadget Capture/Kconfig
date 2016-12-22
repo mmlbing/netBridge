@@ -1,0 +1,16 @@
+menuconfig USB_GADGET_OTHERS
+	tristate "Other Gadget Modules"
+
+if USB_GADGET_OTHERS
+
+config USB_F_CR_CF
+	tristate
+
+config USB_GADGET_CAPTURE
+	tristate "Gadget Capture <Soldier>"
+	select USB_LIBCOMPOSITE
+	select USB_F_CR_CF
+	help
+	  This is USB transmission module for <Soldier>'s ethernet capture.
+
+endif
