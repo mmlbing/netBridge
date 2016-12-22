@@ -13,8 +13,7 @@
 #include "g_capture.h"
 #include "sdebug.h"
 
-USB_GADGET_COMPOSITE_OPTIONS();
-
+static struct usb_composite_overwrite coverwrite;
 
 #define DRIVER_VENDOR_NUM	0x0525		/* NetChip */
 #define DRIVER_PRODUCT_NUM	0xa4a1		/* Linux-USB "Gadget Capture" */
@@ -25,8 +24,6 @@ static const char longname[] = "Gadget Capture";
 static char serial[] = "0123456789.0123456789.0123456789";
 
 static struct usb_capture_options gcapture_options = {
-	.isoc_interval = 4,
-	.isoc_maxpacket = 1024,
 	.bulk_buflen = 4096,
 	.qlen = 32,
 };
@@ -58,39 +55,6 @@ static struct usb_string strings_dev[] = {
 	{  }			/* end of list */
 };
 
-static struct usb_function *func_cr;
-static struct usb_function_instance *func_inst_cr;
-
-
-static struct usb_function *func_cf;
-static struct usb_function_instance *func_inst_cf;
-
-/*static int cr_config_setup(struct usb_configuration *c,
-		const struct usb_ctrlrequest *ctrl)
-{
-	switch (ctrl->bRequest) {
-	case 0x5b:
-	case 0x5c:
-		return func_ss->setup(func_ss, ctrl);
-	default:
-		return -EOPNOTSUPP;
-	}
-}*/
-static struct usb_configuration capturereal_driver = {
-	.label                  = "capturereal",
-	//.setup                  = cr_config_setup,
-	.bConfigurationValue    = 2,								/*上位机选择配置*/
-	.bmAttributes           = USB_CONFIG_ATT_SELFPOWER,
-	/* .iConfiguration      = DYNAMIC */
-};
-
-static struct usb_configuration capturfile_driver = {
-	.label          		= "capturfile",
-	.bConfigurationValue 	= 3,								/*上位机选择配置*/
-	.bmAttributes   		= USB_CONFIG_ATT_SELFPOWER,
-	/* .iConfiguration 		= DYNAMIC */
-};
-
 static struct usb_gadget_strings stringtab_dev = {
 	.language	= 0x0409,	/* en-us */
 	.strings	= strings_dev,
@@ -100,6 +64,42 @@ static struct usb_gadget_strings *dev_strings[] = {
 	&stringtab_dev,
 	NULL,
 };
+
+static struct usb_function *func_cr;
+static struct usb_function_instance *func_inst_cr;
+
+static int cr_config_setup(struct usb_configuration *c,
+		const struct usb_ctrlrequest *ctrl)
+{
+	switch (ctrl->bRequest) {
+	case 0x5b:
+	case 0x5c:
+		return func_cr->setup(func_cr, ctrl);
+	default:
+		return -EOPNOTSUPP;
+	}
+}
+
+static struct usb_configuration capturereal_driver = {
+	.label                  = "capturereal",
+	.setup                  = cr_config_setup,
+	.bConfigurationValue    = 2,								/*上位机选择配置*/
+	.bmAttributes           = USB_CONFIG_ATT_SELFPOWER,
+	/* .iConfiguration      = DYNAMIC */
+};
+
+
+static struct usb_function *func_cf;
+static struct usb_function_instance *func_inst_cf;
+
+
+static struct usb_configuration capturfile_driver = {
+	.label          		= "capturfile",
+	.bConfigurationValue 	= 3,								/*上位机选择配置*/
+	.bmAttributes   		= USB_CONFIG_ATT_SELFPOWER,
+	/* .iConfiguration 		= DYNAMIC */
+};
+
 
 //?
 unsigned autoresume = DEFAULT_AUTORESUME;
@@ -137,7 +137,6 @@ static int __init capture_bind(struct usb_composite_dev *cdev)
 
 	int			status;
 
-	S_DEBUG("capture_bind IN\n");
 	/* Allocate string descriptor numbers ... note that string
 	 * contents can be overridden by the composite_dev glue.
 	 */
@@ -165,10 +164,6 @@ static int __init capture_bind(struct usb_composite_dev *cdev)
 	/*尽管上一步有问题，不过这里应该还是ss_opts的func_inst已经指向func_inst_ss了
 	 */
 	cr_opts->pattern = gcapture_options.pattern;
-	cr_opts->isoc_interval = gcapture_options.isoc_interval;
-	cr_opts->isoc_maxpacket = gcapture_options.isoc_maxpacket;
-	cr_opts->isoc_mult = gcapture_options.isoc_mult;
-	cr_opts->isoc_maxburst = gcapture_options.isoc_maxburst;
 	cr_opts->bulk_buflen = gcapture_options.bulk_buflen;
 
 	func_cr = usb_get_function(func_inst_cr);									//不知道干了什么。。。。先套用
@@ -211,9 +206,8 @@ static int __init capture_bind(struct usb_composite_dev *cdev)
 		autoresume_step_ms = autoresume * 1000;
 	}
 
-	usb_add_config_only(cdev, &capturfile_driver);						/*将config(capturfile_driver)加入到dev(cdev)中*/
 	usb_add_config_only(cdev, &capturereal_driver);
-
+	usb_add_config_only(cdev, &capturfile_driver);						/*将config(capturfile_driver)加入到dev(cdev)中*/
 	
 	status = usb_add_function(&capturereal_driver, func_cr);			/*将function加入到config中*/
 	if (status) {
@@ -230,8 +224,6 @@ static int __init capture_bind(struct usb_composite_dev *cdev)
 	usb_ep_autoconfig_reset(cdev->gadget);								/*设置端点*/
 	
 	usb_composite_overwrite_options(cdev, &coverwrite);
-
-	S_DEBUG("capture_bind OUT\n");
 
 	return 0;
 
@@ -264,7 +256,15 @@ static __refdata struct usb_composite_driver capture_driver = {
 
 static int __init init(void)
 {
-	return usb_composite_probe(&capture_driver);
+	int ret;
+	ret = usb_composite_probe(&capture_driver);
+	if(ret) {
+		return ret;
+	}
+	if(ret) {
+		return ret;
+	}
+	return ret;
 }
 late_initcall(init);
 

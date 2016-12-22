@@ -7,22 +7,26 @@
 
 #include "g_capture.h"
 #include "../gadget_chips.h"
+#include "sdebug.h"
+
+#include <linux/miscdevice.h>
+#include <linux/fs.h>		/*fasync_helper*/
+#include <asm/signal.h>
+#include <asm-generic/siginfo.h>
+/**/
+int cap_misc_dev_count = 0;
+static struct fasync_struct *cap_dev_fasync_struct;
+
+/**/
 
 struct f_capturereal {
 	struct usb_function	function;
-
 	struct usb_ep		*in_ep;
 	struct usb_ep		*out_ep;
-	struct usb_ep		*iso_in_ep;
-	struct usb_ep		*iso_out_ep;
 	int			cur_alt;
 };
 
 static unsigned pattern;
-static unsigned isoc_interval;
-static unsigned isoc_maxpacket;
-static unsigned isoc_mult;
-static unsigned isoc_maxburst;
 static unsigned buflen;
 
 /*-------------------------------------------------------------------------*/
@@ -49,7 +53,7 @@ static struct usb_interface_descriptor capture_real_intf_alt1 = {
 
 /* full speed support: */
 
-static struct usb_endpoint_descriptor fs_source_desc = {
+static struct usb_endpoint_descriptor fs_bulk_in_desc = {
 	.bLength =		USB_DT_ENDPOINT_SIZE,
 	.bDescriptorType =	USB_DT_ENDPOINT,
 
@@ -57,50 +61,25 @@ static struct usb_endpoint_descriptor fs_source_desc = {
 	.bmAttributes =		USB_ENDPOINT_XFER_BULK,
 };
 
-static struct usb_endpoint_descriptor fs_sink_desc = {
+static struct usb_endpoint_descriptor fs_bulk_out_desc = {
 	.bLength =		USB_DT_ENDPOINT_SIZE,
 	.bDescriptorType =	USB_DT_ENDPOINT,
 
 	.bEndpointAddress =	USB_DIR_OUT,
 	.bmAttributes =		USB_ENDPOINT_XFER_BULK,
-};
-
-static struct usb_endpoint_descriptor fs_iso_source_desc = {
-	.bLength =		USB_DT_ENDPOINT_SIZE,
-	.bDescriptorType =	USB_DT_ENDPOINT,
-
-	.bEndpointAddress =	USB_DIR_IN,
-	.bmAttributes =		USB_ENDPOINT_XFER_ISOC,
-	.wMaxPacketSize =	cpu_to_le16(1023),
-	.bInterval =		4,
-};
-
-static struct usb_endpoint_descriptor fs_iso_sink_desc = {
-	.bLength =		USB_DT_ENDPOINT_SIZE,
-	.bDescriptorType =	USB_DT_ENDPOINT,
-
-	.bEndpointAddress =	USB_DIR_OUT,
-	.bmAttributes =		USB_ENDPOINT_XFER_ISOC,
-	.wMaxPacketSize =	cpu_to_le16(1023),
-	.bInterval =		4,
 };
 
 static struct usb_descriptor_header *fs_capture_real_descs[] = {
 	(struct usb_descriptor_header *) &capture_real_intf_alt0,
-	(struct usb_descriptor_header *) &fs_sink_desc,
-	(struct usb_descriptor_header *) &fs_source_desc,
+	(struct usb_descriptor_header *) &fs_bulk_out_desc,
+	(struct usb_descriptor_header *) &fs_bulk_in_desc,
 	(struct usb_descriptor_header *) &capture_real_intf_alt1,
-#define FS_ALT_IFC_1_OFFSET	3
-	(struct usb_descriptor_header *) &fs_sink_desc,
-	(struct usb_descriptor_header *) &fs_source_desc,
-	(struct usb_descriptor_header *) &fs_iso_sink_desc,
-	(struct usb_descriptor_header *) &fs_iso_source_desc,
 	NULL,
 };
 
 /* high speed support: */
 
-static struct usb_endpoint_descriptor hs_source_desc = {
+static struct usb_endpoint_descriptor hs_bulk_in_desc = {
 	.bLength =		USB_DT_ENDPOINT_SIZE,
 	.bDescriptorType =	USB_DT_ENDPOINT,
 
@@ -108,48 +87,25 @@ static struct usb_endpoint_descriptor hs_source_desc = {
 	.wMaxPacketSize =	cpu_to_le16(512),
 };
 
-static struct usb_endpoint_descriptor hs_sink_desc = {
+static struct usb_endpoint_descriptor hs_bulk_out_desc = {
 	.bLength =		USB_DT_ENDPOINT_SIZE,
 	.bDescriptorType =	USB_DT_ENDPOINT,
 
 	.bmAttributes =		USB_ENDPOINT_XFER_BULK,
 	.wMaxPacketSize =	cpu_to_le16(512),
-};
-
-static struct usb_endpoint_descriptor hs_iso_source_desc = {
-	.bLength =		USB_DT_ENDPOINT_SIZE,
-	.bDescriptorType =	USB_DT_ENDPOINT,
-
-	.bmAttributes =		USB_ENDPOINT_XFER_ISOC,
-	.wMaxPacketSize =	cpu_to_le16(1024),
-	.bInterval =		4,
-};
-
-static struct usb_endpoint_descriptor hs_iso_sink_desc = {
-	.bLength =		USB_DT_ENDPOINT_SIZE,
-	.bDescriptorType =	USB_DT_ENDPOINT,
-
-	.bmAttributes =		USB_ENDPOINT_XFER_ISOC,
-	.wMaxPacketSize =	cpu_to_le16(1024),
-	.bInterval =		4,
 };
 
 static struct usb_descriptor_header *hs_capture_real_descs[] = {
 	(struct usb_descriptor_header *) &capture_real_intf_alt0,
-	(struct usb_descriptor_header *) &hs_source_desc,
-	(struct usb_descriptor_header *) &hs_sink_desc,
+	(struct usb_descriptor_header *) &hs_bulk_in_desc,
+	(struct usb_descriptor_header *) &hs_bulk_out_desc,
 	(struct usb_descriptor_header *) &capture_real_intf_alt1,
-#define HS_ALT_IFC_1_OFFSET	3
-	(struct usb_descriptor_header *) &hs_source_desc,
-	(struct usb_descriptor_header *) &hs_sink_desc,
-	(struct usb_descriptor_header *) &hs_iso_source_desc,
-	(struct usb_descriptor_header *) &hs_iso_sink_desc,
 	NULL,
 };
 
 /* super speed support: */
 
-static struct usb_endpoint_descriptor ss_source_desc = {
+static struct usb_endpoint_descriptor ss_bulk_in_desc = {
 	.bLength =		USB_DT_ENDPOINT_SIZE,
 	.bDescriptorType =	USB_DT_ENDPOINT,
 
@@ -157,7 +113,7 @@ static struct usb_endpoint_descriptor ss_source_desc = {
 	.wMaxPacketSize =	cpu_to_le16(1024),
 };
 
-struct usb_ss_ep_comp_descriptor ss_source_comp_desc = {
+struct usb_ss_ep_comp_descriptor ss_bulk_in_comp_desc = {
 	.bLength =		USB_DT_SS_EP_COMP_SIZE,
 	.bDescriptorType =	USB_DT_SS_ENDPOINT_COMP,
 
@@ -166,7 +122,7 @@ struct usb_ss_ep_comp_descriptor ss_source_comp_desc = {
 	.wBytesPerInterval =	0,
 };
 
-static struct usb_endpoint_descriptor ss_sink_desc = {
+static struct usb_endpoint_descriptor ss_bulk_out_desc = {
 	.bLength =		USB_DT_ENDPOINT_SIZE,
 	.bDescriptorType =	USB_DT_ENDPOINT,
 
@@ -174,67 +130,22 @@ static struct usb_endpoint_descriptor ss_sink_desc = {
 	.wMaxPacketSize =	cpu_to_le16(1024),
 };
 
-struct usb_ss_ep_comp_descriptor ss_sink_comp_desc = {
+struct usb_ss_ep_comp_descriptor ss_bulk_out_comp_desc = {
 	.bLength =		USB_DT_SS_EP_COMP_SIZE,
 	.bDescriptorType =	USB_DT_SS_ENDPOINT_COMP,
 
 	.bMaxBurst =		0,
 	.bmAttributes =		0,
 	.wBytesPerInterval =	0,
-};
-
-static struct usb_endpoint_descriptor ss_iso_source_desc = {
-	.bLength =		USB_DT_ENDPOINT_SIZE,
-	.bDescriptorType =	USB_DT_ENDPOINT,
-
-	.bmAttributes =		USB_ENDPOINT_XFER_ISOC,
-	.wMaxPacketSize =	cpu_to_le16(1024),
-	.bInterval =		4,
-};
-
-struct usb_ss_ep_comp_descriptor ss_iso_source_comp_desc = {
-	.bLength =		USB_DT_SS_EP_COMP_SIZE,
-	.bDescriptorType =	USB_DT_SS_ENDPOINT_COMP,
-
-	.bMaxBurst =		0,
-	.bmAttributes =		0,
-	.wBytesPerInterval =	cpu_to_le16(1024),
-};
-
-static struct usb_endpoint_descriptor ss_iso_sink_desc = {
-	.bLength =		USB_DT_ENDPOINT_SIZE,
-	.bDescriptorType =	USB_DT_ENDPOINT,
-
-	.bmAttributes =		USB_ENDPOINT_XFER_ISOC,
-	.wMaxPacketSize =	cpu_to_le16(1024),
-	.bInterval =		4,
-};
-
-struct usb_ss_ep_comp_descriptor ss_iso_sink_comp_desc = {
-	.bLength =		USB_DT_SS_EP_COMP_SIZE,
-	.bDescriptorType =	USB_DT_SS_ENDPOINT_COMP,
-
-	.bMaxBurst =		0,
-	.bmAttributes =		0,
-	.wBytesPerInterval =	cpu_to_le16(1024),
 };
 
 static struct usb_descriptor_header *ss_capture_real_descs[] = {
 	(struct usb_descriptor_header *) &capture_real_intf_alt0,
-	(struct usb_descriptor_header *) &ss_source_desc,
-	(struct usb_descriptor_header *) &ss_source_comp_desc,
-	(struct usb_descriptor_header *) &ss_sink_desc,
-	(struct usb_descriptor_header *) &ss_sink_comp_desc,
+	(struct usb_descriptor_header *) &ss_bulk_in_desc,
+	(struct usb_descriptor_header *) &ss_bulk_in_comp_desc,
+	(struct usb_descriptor_header *) &ss_bulk_out_desc,
+	(struct usb_descriptor_header *) &ss_bulk_out_comp_desc,
 	(struct usb_descriptor_header *) &capture_real_intf_alt1,
-#define SS_ALT_IFC_1_OFFSET	5
-	(struct usb_descriptor_header *) &ss_source_desc,
-	(struct usb_descriptor_header *) &ss_source_comp_desc,
-	(struct usb_descriptor_header *) &ss_sink_desc,
-	(struct usb_descriptor_header *) &ss_sink_comp_desc,
-	(struct usb_descriptor_header *) &ss_iso_source_desc,
-	(struct usb_descriptor_header *) &ss_iso_source_comp_desc,
-	(struct usb_descriptor_header *) &ss_iso_sink_desc,
-	(struct usb_descriptor_header *) &ss_iso_sink_comp_desc,
 	NULL,
 };
 
@@ -254,7 +165,6 @@ static struct usb_gadget_strings *capturereal_strings[] = {
 	&stringtab_capturereal,
 	NULL,
 };
-
 
 /**********************************inside func*************************************************/
 static void reinit_write_data(struct usb_ep *ep, struct usb_request *req)
@@ -387,16 +297,10 @@ static void disable_ep(struct usb_composite_dev *cdev, struct usb_ep *ep)
 	}
 }
 
-void disable_endpoints(struct usb_composite_dev *cdev,
-		struct usb_ep *in, struct usb_ep *out,
-		struct usb_ep *iso_in, struct usb_ep *iso_out)
+void disable_endpoints(struct usb_composite_dev *cdev, struct usb_ep *in, struct usb_ep *out)
 {
 	disable_ep(cdev, in);
 	disable_ep(cdev, out);
-	if (iso_in)
-		disable_ep(cdev, iso_in);
-	if (iso_out)
-		disable_ep(cdev, iso_out);
 }
 
 struct usb_request *alloc_ep_req(struct usb_ep *ep, int len)
@@ -419,58 +323,34 @@ struct usb_request *alloc_ep_req(struct usb_ep *ep, int len)
 }
 
 
-static int capture_real_start_ep(struct f_capturereal *cr, bool is_in, bool is_iso, int speed)
+static int capture_real_start_ep(struct f_capturereal *cr, bool is_in, int speed)
 {
 	struct usb_ep		*ep;
 	struct usb_request	*req;
-	int	i, size, status;
+	int	status;
+	
+	ep = is_in ? cr->in_ep : cr->out_ep;
+	req = alloc_ep_req(ep, 0);
 
-	for (i = 0; i < 8; i++) {
-		if (is_iso) {
-			switch (speed) {
-			case USB_SPEED_SUPER:
-				size = isoc_maxpacket * (isoc_mult + 1) *
-						(isoc_maxburst + 1);
-				break;
-			case USB_SPEED_HIGH:
-				size = isoc_maxpacket * (isoc_mult + 1);
-				break;
-			default:
-				size = isoc_maxpacket > 1023 ?
-						1023 : isoc_maxpacket;
-				break;
-			}
-			ep = is_in ? cr->iso_in_ep : cr->iso_out_ep;
-			req = alloc_ep_req(ep, size);
-		} else {
-			ep = is_in ? cr->in_ep : cr->out_ep;
-			req = alloc_ep_req(ep, 0);
-		}
+	if (!req)
+		return -ENOMEM;
 
-		if (!req)
-			return -ENOMEM;
+	req->complete = capture_real_complete;
+	if (is_in)
+		reinit_write_data(ep, req);
+	else if (pattern != 2)
+		memset(req->buf, 0x55, req->length);
 
-		req->complete = capture_real_complete;
-		if (is_in)
-			reinit_write_data(ep, req);
-		else if (pattern != 2)
-			memset(req->buf, 0x55, req->length);
+	status = usb_ep_queue(ep, req, GFP_ATOMIC);
+	if (status) {
+		struct usb_composite_dev	*cdev;
 
-		status = usb_ep_queue(ep, req, GFP_ATOMIC);
-		if (status) {
-			struct usb_composite_dev	*cdev;
-
-			cdev = cr->function.config->cdev;
-			ERROR(cdev, "start %s%s %s --> %d\n",
-			      is_iso ? "ISO-" : "", is_in ? "IN" : "OUT",
-			      ep->name, status);
-			free_ep_req(ep, req);
-		}
-
-		if (!is_iso)
-			break;
+		cdev = cr->function.config->cdev;
+		/*ERROR(cdev, "start %s%s %s --> %d\n",
+		      is_iso ? "ISO-" : "", is_in ? "IN" : "OUT",
+		      ep->name, status);*/
+		free_ep_req(ep, req);
 	}
-
 	return status;
 }
 
@@ -488,8 +368,7 @@ static void disable_capture_real(struct f_capturereal *cr)
 	struct usb_composite_dev	*cdev;
 
 	cdev = cr->function.config->cdev;
-	disable_endpoints(cdev, cr->in_ep, cr->out_ep, cr->iso_in_ep,
-			cr->iso_out_ep);
+	disable_endpoints(cdev, cr->in_ep, cr->out_ep);
 	VDBG(cdev, "%s disabled\n", cr->function.name);
 }
 
@@ -504,12 +383,14 @@ static int enable_capture_real(struct usb_composite_dev *cdev, struct f_capturer
 	result = config_ep_by_speed(cdev->gadget, &(cr->function), ep);
 	if (result)
 		return result;
+	
 	result = usb_ep_enable(ep);
 	if (result < 0)
 		return result;
+
 	ep->driver_data = cr;
 
-	result = capture_real_start_ep(cr, true, false, speed);
+	result = capture_real_start_ep(cr, true, speed);
 	if (result < 0) {
 fail:
 		ep = cr->in_ep;
@@ -528,9 +409,8 @@ fail:
 		goto fail;
 	ep->driver_data = cr;
 
-	result = capture_real_start_ep(cr, false, false, speed);
+	result = capture_real_start_ep(cr, false, speed);
 	if (result < 0) {
-fail2:
 		ep = cr->out_ep;
 		usb_ep_disable(ep);
 		ep->driver_data = NULL;
@@ -539,48 +419,6 @@ fail2:
 
 	if (alt == 0)
 		goto out;
-
-	/* one iso endpoint writes (sources) zeroes IN (to the host) */
-	ep = cr->iso_in_ep;
-	if (ep) {
-		result = config_ep_by_speed(cdev->gadget, &(cr->function), ep);
-		if (result)
-			goto fail2;
-		result = usb_ep_enable(ep);
-		if (result < 0)
-			goto fail2;
-		ep->driver_data = cr;
-
-		result = capture_real_start_ep(cr, true, true, speed);
-		if (result < 0) {
-fail3:
-			ep = cr->iso_in_ep;
-			if (ep) {
-				usb_ep_disable(ep);
-				ep->driver_data = NULL;
-			}
-			goto fail2;
-		}
-	}
-
-	/* one iso endpoint reads (sinks) anything OUT (from the host) */
-	ep = cr->iso_out_ep;
-	if (ep) {
-		result = config_ep_by_speed(cdev->gadget, &(cr->function), ep);
-		if (result)
-			goto fail3;
-		result = usb_ep_enable(ep);
-		if (result < 0)
-			goto fail3;
-		ep->driver_data = cr;
-
-		result = capture_real_start_ep(cr, false, true, speed);
-		if (result < 0) {
-			usb_ep_disable(ep);
-			ep->driver_data = NULL;
-			goto fail3;
-		}
-	}
 out:
 	cr->cur_alt = alt;
 
@@ -607,7 +445,7 @@ static int capturereal_bind(struct usb_configuration *c, struct usb_function *f)
 	capture_real_intf_alt1.bInterfaceNumber = id;
 
 	/* allocate bulk endpoints */
-	cr->in_ep = usb_ep_autoconfig(cdev->gadget, &fs_source_desc);
+	cr->in_ep = usb_ep_autoconfig(cdev->gadget, &fs_bulk_in_desc);
 	if (!cr->in_ep) {
 autoconf_fail:
 		ERROR(cdev, "%s: can't autoconfigure on %s\n",
@@ -617,123 +455,38 @@ autoconf_fail:
 	}
 	cr->in_ep->driver_data = cdev;	/* claim */
 
-	cr->out_ep = usb_ep_autoconfig(cdev->gadget, &fs_sink_desc);
+	cr->out_ep = usb_ep_autoconfig(cdev->gadget, &fs_bulk_out_desc);
 	if (!cr->out_ep)
 		goto autoconf_fail;
 	cr->out_ep->driver_data = cdev;	/* claim */
 
-	/* sanity check the isoc module parameters */
-	if (isoc_interval < 1)
-		isoc_interval = 1;
-	if (isoc_interval > 16)
-		isoc_interval = 16;
-	if (isoc_mult > 2)
-		isoc_mult = 2;
-	if (isoc_maxburst > 15)
-		isoc_maxburst = 15;
-
-	/* fill in the FS isoc descriptors from the module parameters */
-	fs_iso_source_desc.wMaxPacketSize = isoc_maxpacket > 1023 ?
-						1023 : isoc_maxpacket;
-	fs_iso_source_desc.bInterval = isoc_interval;
-	fs_iso_sink_desc.wMaxPacketSize = isoc_maxpacket > 1023 ?
-						1023 : isoc_maxpacket;
-	fs_iso_sink_desc.bInterval = isoc_interval;
-
-	/* allocate iso endpoints */
-	cr->iso_in_ep = usb_ep_autoconfig(cdev->gadget, &fs_iso_source_desc);
-	if (!cr->iso_in_ep)
-		goto no_iso;
-	cr->iso_in_ep->driver_data = cdev;	/* claim */
-
-	cr->iso_out_ep = usb_ep_autoconfig(cdev->gadget, &fs_iso_sink_desc);
-	if (cr->iso_out_ep) {
-		cr->iso_out_ep->driver_data = cdev;	/* claim */
-	} else {
-		cr->iso_in_ep->driver_data = NULL;
-		cr->iso_in_ep = NULL;
-no_iso:
-		/*
-		 * We still want to work even if the UDC doesn't have isoc
-		 * endpoints, so null out the alt interface that contains
-		 * them and continue.
-		 */
-		fs_capture_real_descs[FS_ALT_IFC_1_OFFSET] = NULL;
-		hs_capture_real_descs[HS_ALT_IFC_1_OFFSET] = NULL;
-		ss_capture_real_descs[SS_ALT_IFC_1_OFFSET] = NULL;
-	}
-
-	if (isoc_maxpacket > 1024)
-		isoc_maxpacket = 1024;
-
 	/* support high speed hardware */
-	hs_source_desc.bEndpointAddress = fs_source_desc.bEndpointAddress;
-	hs_sink_desc.bEndpointAddress = fs_sink_desc.bEndpointAddress;
-
-	/*
-	 * Fill in the HS isoc descriptors from the module parameters.
-	 * We assume that the user knows what they are doing and won't
-	 * give parameters that their UDC doesn't support.
-	 */
-	hs_iso_source_desc.wMaxPacketSize = isoc_maxpacket;
-	hs_iso_source_desc.wMaxPacketSize |= isoc_mult << 11;
-	hs_iso_source_desc.bInterval = isoc_interval;
-	hs_iso_source_desc.bEndpointAddress =
-		fs_iso_source_desc.bEndpointAddress;
-
-	hs_iso_sink_desc.wMaxPacketSize = isoc_maxpacket;
-	hs_iso_sink_desc.wMaxPacketSize |= isoc_mult << 11;
-	hs_iso_sink_desc.bInterval = isoc_interval;
-	hs_iso_sink_desc.bEndpointAddress = fs_iso_sink_desc.bEndpointAddress;
+	hs_bulk_in_desc.bEndpointAddress = fs_bulk_in_desc.bEndpointAddress;
+	hs_bulk_out_desc.bEndpointAddress = fs_bulk_out_desc.bEndpointAddress;
 
 	/* support super speed hardware */
-	ss_source_desc.bEndpointAddress =
-		fs_source_desc.bEndpointAddress;
-	ss_sink_desc.bEndpointAddress =
-		fs_sink_desc.bEndpointAddress;
-
-	/*
-	 * Fill in the SS isoc descriptors from the module parameters.
-	 * We assume that the user knows what they are doing and won't
-	 * give parameters that their UDC doesn't support.
-	 */
-	ss_iso_source_desc.wMaxPacketSize = isoc_maxpacket;
-	ss_iso_source_desc.bInterval = isoc_interval;
-	ss_iso_source_comp_desc.bmAttributes = isoc_mult;
-	ss_iso_source_comp_desc.bMaxBurst = isoc_maxburst;
-	ss_iso_source_comp_desc.wBytesPerInterval =
-		isoc_maxpacket * (isoc_mult + 1) * (isoc_maxburst + 1);
-	ss_iso_source_desc.bEndpointAddress =
-		fs_iso_source_desc.bEndpointAddress;
-
-	ss_iso_sink_desc.wMaxPacketSize = isoc_maxpacket;
-	ss_iso_sink_desc.bInterval = isoc_interval;
-	ss_iso_sink_comp_desc.bmAttributes = isoc_mult;
-	ss_iso_sink_comp_desc.bMaxBurst = isoc_maxburst;
-	ss_iso_sink_comp_desc.wBytesPerInterval =
-		isoc_maxpacket * (isoc_mult + 1) * (isoc_maxburst + 1);
-	ss_iso_sink_desc.bEndpointAddress = fs_iso_sink_desc.bEndpointAddress;
+	ss_bulk_in_desc.bEndpointAddress = fs_bulk_in_desc.bEndpointAddress;
+	ss_bulk_out_desc.bEndpointAddress = fs_bulk_out_desc.bEndpointAddress;
 
 	ret = usb_assign_descriptors(f, fs_capture_real_descs,
 			hs_capture_real_descs, ss_capture_real_descs);
 	if (ret)
 		return ret;
 
-	DBG(cdev, "%s speed %s: IN/%s, OUT/%s, ISO-IN/%s, ISO-OUT/%s\n",
+	/*DBG(cdev, "%s speed %s: IN/%s, OUT/%s, ISO-IN/%s, ISO-OUT/%s\n",
 	    (gadget_is_superspeed(c->cdev->gadget) ? "super" :
 	     (gadget_is_dualspeed(c->cdev->gadget) ? "dual" : "full")),
 			f->name, cr->in_ep->name, cr->out_ep->name,
 			cr->iso_in_ep ? cr->iso_in_ep->name : "<none>",
-			cr->iso_out_ep ? cr->iso_out_ep->name : "<none>");
+			cr->iso_out_ep ? cr->iso_out_ep->name : "<none>");*/
 	return 0;
 }
 
-static int capturereal_set_alt(struct usb_function *f,
-		unsigned intf, unsigned alt)
+static int capturereal_set_alt(struct usb_function *f, unsigned intf, unsigned alt)
 {
 	struct f_capturereal		*cr = func_to_cr(f);
 	struct usb_composite_dev	*cdev = f->config->cdev;
-
+	
 	if (cr->in_ep->driver_data)
 		disable_capture_real(cr);
 	return enable_capture_real(cdev, cr, alt);
@@ -763,7 +516,6 @@ static int capturereal_setup(struct usb_function *f, const struct usb_ctrlreques
 	u16			w_length = le16_to_cpu(ctrl->wLength);
 
 	req->length = USB_COMP_EP0_BUFSIZ;
-
 	/* composite driver infrastructure handles everything except
 	 * the two control test requests.
 	 */
@@ -779,6 +531,8 @@ static int capturereal_setup(struct usb_function *f, const struct usb_ctrlreques
 	 * requests may safely intervene.
 	 */
 	case 0x5b:	/* control WRITE test -- fill the buffer */
+		S_DEBUG("bRequest 0x5b\n");
+		cap_dev_send_sig();
 		if (ctrl->bRequestType != (USB_DIR_OUT|USB_TYPE_VENDOR)) {
 			goto unknown;
 		}
@@ -849,10 +603,6 @@ static struct usb_function *capture_real_alloc_func(
 
 	cr_opts =  container_of(fi, struct f_cr_opts, func_inst);
 	pattern = cr_opts->pattern;
-	isoc_interval = cr_opts->isoc_interval;
-	isoc_maxpacket = cr_opts->isoc_maxpacket;
-	isoc_mult = cr_opts->isoc_mult;
-	isoc_maxburst = cr_opts->isoc_maxburst;
 	buflen = cr_opts->bulk_buflen;
 
 	cr->function.name = "capture/real";
@@ -887,10 +637,79 @@ static struct usb_function_instance *capture_real_alloc_inst(void)
 	return &cr_opts->func_inst;
 }
 
-
 DECLARE_USB_FUNCTION(CaptureReal, capture_real_alloc_inst,
 		capture_real_alloc_func);
 
+/*********************************misc dev func***************************************/
+void cap_dev_send_sig(void)
+{
+	S_DEBUG("cap_dev_send_sig IN\n");
+	kill_fasync(&cap_dev_fasync_struct, SIGIO, POLL_IN);
+}
+
+static int cap_dev_open(struct inode *inodp, struct file *filp)
+{
+	if(cap_misc_dev_count > 0)
+		return -1;
+	cap_misc_dev_count++;
+	return 0;
+}
+
+static ssize_t cap_dev_read(struct file *filp, char __user *buff, size_t count, loff_t *f_pos)
+{
+	return 0;
+}
+
+static ssize_t cap_dev_write(struct file *filp, const char __user *buff, size_t count, loff_t *f_pos)
+{
+	return 0;
+}
+
+static int cap_dev_fasync(int fd, struct file *filp, int mode)
+{
+	return fasync_helper(fd, filp, mode, &cap_dev_fasync_struct);
+}
+
+static int cap_dev_release(struct inode *inodp, struct file *filp)
+{
+	if(cap_misc_dev_count <= 0)
+		return -1;
+	cap_dev_fasync(-1, filp, 0);
+	cap_misc_dev_count--;
+	return 0;
+}
+
+static struct file_operations cap_dev_fops = {
+    .owner = THIS_MODULE,
+    .open = cap_dev_open,
+    .release = cap_dev_release,
+    .write = cap_dev_write,
+    .read = cap_dev_read,
+    .fasync = cap_dev_fasync,
+};
+
+static struct miscdevice cap_misc_dev = 
+{
+	.minor = MISC_DYNAMIC_MINOR,
+	.name = "capture_dev",
+	.fops = &cap_dev_fops,
+};
+
+static int __init cap_misc_dev_init(void)
+{
+	int ret;
+	cap_misc_dev_count = 0;
+	ret = misc_register(&cap_misc_dev);
+	if(ret) {
+		return ret;
+	}
+	return ret;
+}
+static void __exit cap_misc_dev_exit(void)
+{
+	misc_deregister(&cap_misc_dev);
+}
+/*********************************END misc dev func END***************************************/
 
 static int __init crcf_modinit(void)
 {
@@ -902,10 +721,14 @@ static int __init crcf_modinit(void)
 	ret = cf_modinit();
 	if (ret)
 		usb_function_unregister(&CaptureRealusb_func);
+	ret = cap_misc_dev_init();
+	if (ret)
+		usb_function_unregister(&CaptureRealusb_func);
 	return ret;
 }
 static void __exit crcf_modexit(void)
 {
+	cap_misc_dev_exit();
 	usb_function_unregister(&CaptureRealusb_func);
 	cf_modexit();
 }

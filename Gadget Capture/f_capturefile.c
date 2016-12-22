@@ -148,7 +148,7 @@ static void disable_capturefile(struct f_capturefile *capture)
 	struct usb_composite_dev	*cdev;
 
 	cdev = capture->function.config->cdev;
-	disable_endpoints(cdev, capture->in_ep, capture->out_ep, NULL, NULL);
+	disable_endpoints(cdev, capture->in_ep, capture->out_ep);
 	VDBG(cdev, "%s disabled\n", capture->function.name);
 }
 
@@ -202,7 +202,8 @@ static void capturefile_complete(struct usb_ep *ep, struct usb_request *req)
 	}
 }
 
-static int enable_capturefile(struct usb_composite_dev *cdev, struct f_capturefile *capture)
+static int
+enable_capturefile(struct usb_composite_dev *cdev, struct f_capturefile *capture)
 {
 	int							result = 0;
 	struct usb_ep				*ep;
