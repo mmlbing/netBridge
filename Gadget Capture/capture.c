@@ -10,6 +10,7 @@
 #include <linux/err.h>
 #include <linux/usb/composite.h>
 
+#include "packet_list.h"
 #include "g_capture.h"
 #include "sdebug.h"
 
@@ -23,10 +24,10 @@ static const char longname[] = "Gadget Capture";
 /* default serial number takes at least two packets */
 static char serial[] = "0123456789.0123456789.0123456789";
 
-static struct usb_capture_options gcapture_options = {
-	.bulk_buflen = 4096,
+/*static struct usb_capture_options gcapture_options = {
+	.bulk_buflen = PAK_NODE_SIZE,
 	.qlen = 32,
-};
+};*/
 
 
 static struct usb_device_descriptor device_desc = {
@@ -72,8 +73,11 @@ static int cr_config_setup(struct usb_configuration *c,
 		const struct usb_ctrlrequest *ctrl)
 {
 	switch (ctrl->bRequest) {
-	case 0x5b:
-	case 0x5c:
+	case SET_REQ_READ_START:
+	case SET_REQ_READ_FINISH:
+	case SET_REQ_STATE:
+	case SET_REQ_COMD:
+	case SET_REQ_READ_ERR:
 		return func_cr->setup(func_cr, ctrl);
 	default:
 		return -EOPNOTSUPP;
@@ -131,10 +135,6 @@ static void capture_autoresume(unsigned long _c)
 
 static int __init capture_bind(struct usb_composite_dev *cdev)
 {
-//!
-	struct f_cr_opts	*cr_opts;
-	struct f_cf_opts	*cf_opts;
-
 	int			status;
 
 	/* Allocate string descriptor numbers ... note that string
@@ -160,12 +160,6 @@ static int __init capture_bind(struct usb_composite_dev *cdev)
 		return PTR_ERR(func_inst_cr);
 		}
 
-	cr_opts =  container_of(func_inst_cr, struct f_cr_opts, func_inst);			/*返回了包含func_inst_ss的f_cr_opts类型结构体的首地址(可并没有事先把func_inst_cr赋给f_cr_opts中的func_inst成员啊。。。)*/
-	/*尽管上一步有问题，不过这里应该还是ss_opts的func_inst已经指向func_inst_ss了
-	 */
-	cr_opts->pattern = gcapture_options.pattern;
-	cr_opts->bulk_buflen = gcapture_options.bulk_buflen;
-
 	func_cr = usb_get_function(func_inst_cr);									//不知道干了什么。。。。先套用
 	if (IS_ERR(func_cr)) {
 		S_DEBUG("SSS:03\n");
@@ -179,10 +173,6 @@ static int __init capture_bind(struct usb_composite_dev *cdev)
 		status = PTR_ERR(func_inst_cf);
 		goto err_put_func_cr;
 	}
-
-	cf_opts = container_of(func_inst_cf, struct f_cf_opts, func_inst);			/**/
-	cf_opts->bulk_buflen = gcapture_options.bulk_buflen;
-	cf_opts->qlen = gcapture_options.qlen;
 
 	func_cf = usb_get_function(func_inst_cf);									/**/
 	if (IS_ERR(func_cf)) {
@@ -243,13 +233,25 @@ err_put_func_inst_cr:
 	return status;
 }
 
+static int capture_unbind(struct usb_composite_dev *cdev)
+{
+	del_timer_sync(&autoresume_timer);
+	if (!IS_ERR_OR_NULL(func_cr))
+		usb_put_function(func_cr);
+	usb_put_function_instance(func_inst_cr);
+	if (!IS_ERR_OR_NULL(func_cf))
+		usb_put_function(func_cf);
+	usb_put_function_instance(func_inst_cf);
+	return 0;
+}
+
 static __refdata struct usb_composite_driver capture_driver = {
 	.name		= "capture",
 	.dev		= &device_desc,
 	.strings	= dev_strings,
 	.max_speed	= USB_SPEED_SUPER,
 	.bind		= capture_bind,
-	//.unbind		= zero_unbind,
+	.unbind		= capture_unbind,
 	//.suspend	= zero_suspend,
 	//.resume		= zero_resume,
 };

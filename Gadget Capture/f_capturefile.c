@@ -148,7 +148,7 @@ static void disable_capturefile(struct f_capturefile *capture)
 	struct usb_composite_dev	*cdev;
 
 	cdev = capture->function.config->cdev;
-	disable_endpoints(cdev, capture->in_ep, capture->out_ep);
+	//disable_endpoints(cdev, capture->in_ep, capture->out_ep);
 	VDBG(cdev, "%s disabled\n", capture->function.name);
 }
 
@@ -197,7 +197,7 @@ static void capturefile_complete(struct usb_ep *ep, struct usb_request *req)
 	case -ECONNABORTED:		/* hardware forced ep reset */
 	case -ECONNRESET:		/* request dequeued */
 	case -ESHUTDOWN:		/* disconnect from host */
-		free_ep_req(ep, req);
+		//free_ep_req(ep, req);
 		return;
 	}
 }
@@ -241,7 +241,7 @@ fail0:
 	 * than 'buflen' bytes each.
 	 */
 	for (i = 0; i < qlen && result == 0; i++) {
-		req = alloc_ep_req(ep, 0);
+		//req = alloc_ep_req(ep, 0);
 		if (req) {
 			req->complete = capturefile_complete;
 			result = usb_ep_queue(ep, req, GFP_ATOMIC);
